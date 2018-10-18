@@ -10,7 +10,7 @@ from keras.preprocessing.text import text_to_word_sequence, Tokenizer
 from keras.layers import Input, Dense, Embedding, LSTM
 from keras.layers.noise import GaussianNoise
 from keras.layers.wrappers import TimeDistributed
-from keras.models import Model
+from keras.models import Model, model_from_json
 from gensim.models import KeyedVectors
 from keras.callbacks import LambdaCallback, ModelCheckpoint
 import keras.backend as K
@@ -137,7 +137,7 @@ def create_emb_and_dump(words_set, word_to_id,fname="emb_wordsets.p"):
             raise ValueError("words_setに含まれる単語が一致しません")
  
     print("w2vデータをload中...")
-    w2v_fname = "jawiki_word.bin"
+    w2v_fname = "model.bin"
     words_num = len(words_set)
     w2v = KeyedVectors.load_word2vec_format(w2v_fname, binary=True)
     w2v_dim = w2v.vector_size
@@ -175,25 +175,29 @@ def save_config():
             fo.write("{}, ".format(i))
     return
 
-def plot_history_loss(loss_history):
+def plot_history_loss(loss_history,val_loss_history):
     # Plot the loss in the history
     fig = plt.figure(1)
     plt.plot(loss_history,label="loss for training")
+    plt.plot(val_loss_history, label="val_loss for training")
     plt.title("model_loss")
     plt.xlabel("epoch")
     plt.ylabel('loss: cross_entropy')
-    plt.legend(loc='upper right')
+    plt.legend(["loss","val_loss"],loc='upper right')
     fig.savefig(save_loss_fname)
 
     return
 
 if __name__ == '__main__':
 
-    data_fname = "./source/copy_source.txt"
-    base_dir = "templete_model"
+    fname = "wiki_edojidai"
+    data_fname = "./source/{}.txt".format(fname)
+    # base_dir = "templete_model"
+    base_dir = "language_model"
     if not os.path.exists(base_dir):
         os.mkdir(base_dir)
-    model_dir = "{}/models_5000".format(base_dir)
+    # model_dir = "{}/models_5000_fast_isTraining".format(base_dir)
+    model_dir = "{}/models_{}".format(base_dir, fname)
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
     weights_dir = model_dir+"/weights"
@@ -207,6 +211,8 @@ if __name__ == '__main__':
     save_config_fname = "./{}/config.txt".format(model_dir)
     save_loss_fname = "./{}/loss.png".format(model_dir)
     save_word2id_fname = "./{}/word2id.p".format(model_dir)
+
+    func_wordsets_fname = "./func_wordsets.p"
 
     touch_file(save_gen_morph_fname)
  
@@ -223,13 +229,24 @@ if __name__ == '__main__':
     words_sequence = text_to_word_sequence(text=sentences,
                                       filters='\n',
                                       split=" ")
-    words_set = sorted(set(words_sequence))
+    with open(func_wordsets_fname,"rb") as fi:
+        func_wordsets = pickle.load(fi)
+    words_set = set(words_sequence) | set(func_wordsets)
+    words_set = sorted(words_set)
     words_num = len(words_set)
  
     tokenizer = Tokenizer(filters='\n')
     tokenizer.fit_on_texts(sent_list)
     sent_seq = tokenizer.texts_to_sequences(sent_list)
     word_to_id = tokenizer.word_index
+    total_ids = len(word_to_id)
+    for func_word in func_wordsets:
+        if func_word not in word_to_id:
+            total_ids += 1
+            word_to_id[func_word] = total_ids
+    if words_num != total_ids:
+        print(words_num, total_ids)
+        raise AssertionError("words_numとtotal_idsの総数が異なります")
     id_to_word = tokenizer.index_word
     X = [sent[:-1] for sent in sent_seq]
     X = sequence.pad_sequences(sequences=X,
@@ -258,7 +275,7 @@ if __name__ == '__main__':
                     input_length=maxlen,
                     weights=[embedding_matrix],
                     mask_zero=True,
-                    trainable=False
+                    trainable=True
                     )(main_input)
     initial_h = Input(shape=(h_length,),
                           dtype='float32',
@@ -278,20 +295,19 @@ if __name__ == '__main__':
  
     model = Model(inputs=[main_input, initial_h,initial_c],
                     outputs=main_output)
-    loss = keras.losses.categorical_crossentropy
-    model.compile(optimizer='rmsprop', loss=loss)
+    model.compile(optimizer='adam', loss="categorical_crossentropy")
     model.summary()
     """
         callbacksの記述
     """
-    es_cb = keras.callbacks.EarlyStopping(monitor='loss', patience=0, verbose=1, mode='auto')
+    es_cb = keras.callbacks.EarlyStopping(patience=30, verbose=1)
     print_callback = LambdaCallback(on_epoch_end=on_epoch_end)
     model_checkpoint = ModelCheckpoint(filepath=save_callback_weights_fname,
-                                        monitor='loss',
                                         save_weights_only=True,
-                                        period=10)
-    epochs = 150
+                                        period=50)
+    epochs = 1000
     loss_history = []
+    val_loss_history = []
     for i in range(epochs):
         h = np.random.normal(0,1,(n_samples,h_length))
         c = np.random.normal(0,1,(n_samples,h_length))
@@ -300,14 +316,17 @@ if __name__ == '__main__':
                 epochs=i+1,
                 batch_size=32,
                 initial_epoch = i,
+                validation_split=0.1,
                 callbacks=[print_callback,es_cb,model_checkpoint])
         loss = fit.history['loss'][0]
+        val_loss = fit.history['val_loss'][0]
         loss_history.append(loss)
+        val_loss_history.append(val_loss)
     model_json = model.to_json()
     with open(save_model_fname, mode='w') as fo:
         fo.write(model_json)
     model.save_weights(save_weights_fname)
-    plot_history_loss(loss_history)
+    plot_history_loss(loss_history,val_loss_history)
     save_config()
     with open(save_word2id_fname,"wb") as fo:
         pickle.dump(word_to_id, fo)

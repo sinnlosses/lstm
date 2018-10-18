@@ -61,10 +61,11 @@ if __name__ == '__main__':
     2. 重みファイルhdf5
     3. word_to_idが入ったpickle
     """
-    # model_dir = "./templete_model/models_5000"
+    # model_dir = "./templete_model/models_5000_fast_isTraining"
     model_dir = "./language_model/models_wiki_edojidai"
     model_fname = "{}/model.json".format(model_dir)
     weights_dir = model_dir+"/weights"
+    # weights = "weights.hdf5"
     weights = "weights.hdf5"
     weights_fname = "{}/{}".format(weights_dir,weights)
     word2id_fname = "{}/word2id.p".format(model_dir)
@@ -88,8 +89,8 @@ if __name__ == '__main__':
     for n_sample in range(n_samples):
         x_pred = np.zeros(shape=(1,maxlen),dtype='int32')
         x_pred[0,0] = word_to_id['<bos>']
-        pred_h = np.random.normal(0,1,(1,h_length))
-        pred_c = np.random.normal(0,1,(1,h_length))
+        pred_h = np.random.normal(0,3,(1,h_length))
+        pred_c = np.random.normal(0,3,(1,h_length))
         sentence = ["<bos>"]
         for i in range(maxlen-1):
             preds = model.predict([x_pred,pred_h,pred_c], verbose=0)[0]
