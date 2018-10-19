@@ -2,256 +2,70 @@
 import os
 import re
 import random
-import sys
 import numpy as np
-import keras
-from keras.preprocessing import sequence
-from keras.preprocessing.text import text_to_word_sequence, Tokenizer
+
+os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+
 from keras.layers import Input, Dense, Embedding, LSTM
-from keras.layers.noise import GaussianNoise
 from keras.layers.wrappers import TimeDistributed
-from keras.models import Model
-from gensim.models import KeyedVectors
-from keras.callbacks import LambdaCallback, ModelCheckpoint
-import keras.backend as K
+from keras.models import Model, model_from_json
+from keras.callbacks import LambdaCallback, ModelCheckpoint, EarlyStopping
 import pickle
-import MeCab
-import tensorflow as tf
-import matplotlib.pyplot as plt
 
-def choise_output_word_id(distribution, mode='greedy'):
-    output_ids = np.argsort(distribution)[::-1]
-    def check(id):
-        if id == 0:
-            return False
-        elif id_to_word[id] == "<bos>":
-            return False
-        return True
-
-    if mode == "greedy":
-        i = 0
-        while True:
-            output_id = output_ids[0]
-            if check(output_id):
-                break
-            else:
-                i += 1
-    elif mode == "random":
-        output_ids = output_ids[:3]
-        while True:
-            output_id = random.choice(output_ids)
-            if check(output_id):
-                break
-    else:
-        raise ValueError("modeの値が間違っています")
-
-    return output_id
+from utils import sent_to_surface_conjugated, max_sent_len, save_config
+from utils import create_words_set, create_data_x_y, create_emb_and_dump
+from utils import plot_history_loss, choise_output_word_id
 
 def on_epoch_end(epoch, logs):
 
+    BorEOS = "<BOS/EOS>_BOS/EOS_*_*_*_*".lower()
     print('----- Generating text after Epoch: %d' % epoch)
     x_pred = np.zeros(shape=(1,maxlen),dtype='int32')
-    x_pred[0,0] = word_to_id['<bos>']
-    pred_h = np.random.normal(0,1,(1,h_length))
-    pred_c = np.random.normal(0,1,(1,h_length))
-    sentence = ["<bos>"]
+    x_pred[0,0] = word_to_id[BorEOS]
+    h_pred = np.random.normal(0,1,(1,h_length))
+    c_pred = np.random.normal(0,1,(1,h_length))
+    sentence = []
     for i in range(maxlen-1):
-        preds = model.predict([x_pred,pred_h,pred_c], verbose=0)[0]
+        preds = model.predict([x_pred,h_pred,c_pred], verbose=0)[0]
         output_id = choise_output_word_id(preds[i], mode="random")
         output_word = id_to_word[output_id]
         sentence.append(output_word)
-        if output_word == "<eos>":
+        if output_word == BorEOS:
             break
         x_pred[0,i+1] = output_id
-    if "<eos>" not in sentence:
-        err_mes = "produce_failed!\n"
-        print(err_mes, end="")
-        with open(save_gen_morph_fname,"a") as fo:
-            fo.write(err_mes)
+    if sentence[-1] != BorEOS:
+        err_mes = "produce_failed!"
+        print(err_mes)
         return
 
-    # <bos>と<eos>を削除
-    del sentence[0]
     del sentence[-1]
-
-    def create_sent_morph(w_m):
-        word, morph = w_m.split("_")[0], w_m.split("_")[1]
-        if morph in ["助詞","助動詞","記号","接続詞"]:
-            res = word
-        else:
-            res = morph
-        return res
-
     sent_surface = [w_m.split("_")[0] for w_m in sentence]
     sent_surface = " ".join(sent_surface)
-    sent_morph = [create_sent_morph(w_m) for w_m in sentence]
-
     print(sent_surface)
 
-    with open(save_gen_morph_fname,"a") as fo:
-        res = "{},{}\n".format(sent_surface, sent_morph)
-        fo.write(res)
     return
 
-def max_sent_len(sent_list):
-    return max([len(sent.split(" ")) for sent in sent_list])
-
-def sent_to_surface_conjugated(sentences:str):
-    """
-        \nで区切られた文章群の各単語mecabで解析し表層形_活用形の形式で保存する
-        また、表層形_活用形の形式で文章群を書き直し保存する
-    """
-    mecab = MeCab.Tagger()
-    mecab.parse("")
-    sent_list = sentences.split("\n")
-    mecabed_list = []
-    for sent in sent_list:
-        word_morph_list = []
-        node = mecab.parseToNode(sent)
-        while node:
-            word = node.surface
-            morph = node.feature.split(",")[0]
-            if morph == "BOS/EOS":
-                node = node.next
-                continue
-            wm = "{}_{}".format(word, morph)
-            word_morph_list.append(wm)
-            node = node.next
-        result = "{} {} {}".format("<bos>",
-                                   " ".join(word_morph_list),
-                                   "<eos>")
-        mecabed_list.append(result)
-    return mecabed_list
-
-def create_emb_and_dump(words_set, word_to_id,fname="emb_wordsets.p"):
-    """
-    embのファイルパスを指定すればembmatrixをロード、
-    指定しなければembmatrixを作成して
-    """
-    if os.path.exists(path=fname):
-        with open(fname, "rb") as fi:
-            emb, loaded_words_set = pickle.load(fi)
-        if words_set == loaded_words_set:
-            return emb
-        else:
-            raise ValueError("words_setに含まれる単語が一致しません")
-
-    print("w2vデータをload中...")
-    w2v_fname = "jawiki_word.bin"
-    words_num = len(words_set)
-    w2v = KeyedVectors.load_word2vec_format(w2v_fname, binary=True)
-    w2v_dim = w2v.vector_size
-    embedding_matrix = np.zeros((words_num+1, w2v_dim))
-    for word in words_set:
-        word_surface = word.split("_")[0]
-        id = word_to_id[word]
-        if word_surface not in w2v.vocab:
-            embedding_matrix[id] = np.random.normal(0,1,(1,w2v_dim))
-        else:
-            embedding_matrix[id] = w2v.wv[word_surface]
-    with open(fname,"wb") as fo:
-        pickle.dump([embedding_matrix, words_set],fo)
-
-    return embedding_matrix
-
-def touch_file(file_path):
-    with open(file_path,"w") as fo:
-        pass
-    return
-
-def save_config():
-    """
-        sava_config
-    """
-    with open(save_config_fname,"w") as fo:
-        fo.write("Config\n\n")
-        fo.write("maxlen: {}\n".format(maxlen))
-        fo.write("n_samples: {}\n".format(n_samples))
-        fo.write("words: {}\n".format(words_num))
-        fo.write("h_length: {}\n".format(h_length))
-        fo.write("w2v_dim: {}\n".format(w2v_dim))
-        fo.write("words_example:\n\n")
-        for i in words_set[:30]:
-            fo.write("{}, ".format(i))
-    return
-
-def plot_history_loss(loss_history):
-    # Plot the loss in the history
-    fig = plt.figure(1)
-    plt.plot(loss_history,label="loss for training")
-    plt.title("model_loss")
-    plt.xlabel("epoch")
-    plt.ylabel('loss: cross_entropy')
-    plt.legend(loc='upper right')
-    fig.savefig(save_loss_fname)
-
-    return
-
-if __name__ == '__main__':
-
-    data_fname = "./source/copy_source.txt"
-    base_dir = "templete_model"
+def data_check():
+    # コピーのソースの確認
+    if not os.path.exists(data_fname):
+        raise IOError(f"{data_fname}がありません")
+    # 各モデルを保存するベースDirの確認
     if not os.path.exists(base_dir):
         os.mkdir(base_dir)
-    model_dir = "{}/models_5000".format(base_dir)
+    # モデルのDirの確認
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
-    weights_dir = model_dir+"/weights"
+    # 重みを保存するDirの確認
     if not os.path.exists(weights_dir):
         os.mkdir(weights_dir)
-    w2v_emb_fname = "./{}/emb_wordsets.p".format(model_dir)
-    save_model_fname = "./{}/model.json".format(model_dir)
-    save_weights_fname = "./{}/weights/weights.hdf5".format(model_dir)
-    save_callback_weights_fname = "./"+model_dir+"/weights/weights_{epoch:03d}-{loss:.2f}.hdf5"
-    save_gen_morph_fname = "./{}/result.csv".format(model_dir)
-    save_config_fname = "./{}/config.txt".format(model_dir)
-    save_loss_fname = "./{}/loss.png".format(model_dir)
-    save_word2id_fname = "./{}/word2id.p".format(model_dir)
+    if not os.path.exists(func_wordsets_fname):
+        raise IOError(f"{func_wordsets_fname}がありません")
 
-    touch_file(save_gen_morph_fname)
+    return
 
-    with open(data_fname, "r") as fi:
-        data = fi.read()
-
-    maxlen = 40
-    sent_list = sent_to_surface_conjugated(data)
-    sent_list = [sent for sent in sent_list if len(sent.split(" ")) < maxlen]
-    n_samples = len(sent_list)
-    maxlen = max_sent_len(sent_list) + 10
-    sentences = " ".join(sent_list)
-
-    words_sequence = text_to_word_sequence(text=sentences,
-                                      filters='\n',
-                                      split=" ")
-    words_set = sorted(set(words_sequence))
-    words_num = len(words_set)
-
-    tokenizer = Tokenizer(filters='\n')
-    tokenizer.fit_on_texts(sent_list)
-    sent_seq = tokenizer.texts_to_sequences(sent_list)
-    word_to_id = tokenizer.word_index
-    id_to_word = tokenizer.index_word
-    X = [sent[:-1] for sent in sent_seq]
-    X = sequence.pad_sequences(sequences=X,
-                               maxlen=maxlen,
-                               padding='post')
-    y_seq = [sent[1:] for sent in sent_seq]
-    y_seq = sequence.pad_sequences(sequences=y_seq,
-                                   maxlen=maxlen,
-                                   padding='post')
-    Y = np.zeros((n_samples, maxlen, words_num+1), dtype=np.bool)
-
-    for i, id_seq in enumerate(y_seq):
-        for j, id in enumerate(id_seq):
-            if id == 0:
-                continue
-            Y[i,j,id] = 1.
-    embedding_matrix = create_emb_and_dump(words_set,
-                                           word_to_id,
-                                           fname=w2v_emb_fname)
-    w2v_dim = len(embedding_matrix[1])
-    h_length = 32
-
+def create_model(save_path:str,
+                 h_length=32):
     main_input = Input(shape=(maxlen,), dtype='int32', name='main_input')
     emb = Embedding(input_dim=words_num+1,
                     output_dim=w2v_dim,
@@ -278,20 +92,134 @@ if __name__ == '__main__':
 
     model = Model(inputs=[main_input, initial_h,initial_c],
                     outputs=main_output)
-    loss = keras.losses.categorical_crossentropy
-    model.compile(optimizer='rmsprop', loss=loss)
+
+    model_json = model.to_json()
+    with open(save_path, mode='w') as fo:
+        fo.write(model_json)
+
+    return model
+
+if __name__ == '__main__':
+
+    data_fname = "./source/copy_source.txt"
+    base_dir = "templete_model"
+    model_dir_name = "models_5000"
+    func_wordsets_fname = "func_wordsets.p"
+    w2v_fname = "model.bin"
+    maxlen = 40
+    mecab_lv = 4
+    is_data_analyzed = True
+    is_lang_model = False
+    is_reversed = True
+    use_loaded_x_y_w2i = False
+    use_loaded_emb = True
+    use_loaded_model = True
+    use_loaded_weight = False
+
+    model_dir = os.path.join(base_dir,model_dir_name)
+    weights_dir = os.path.join(model_dir,"weights")
+    w2v_emb_fname = os.path.join(model_dir, "emb_wordsets.p")
+    save_x_y_w2i_fname = os.path.join(model_dir, "x_y_w2i.p")
+    save_data_fname = os.path.join(model_dir, "analyzed_data.txt")
+    save_model_fname = os.path.join(model_dir, "model.json")
+    save_weights_fname = os.path.join(weights_dir, "weights.hdf5")
+    save_callback_weights_fname = os.path.join(weights_dir,"weights_{epoch:03d}_{loss:.2f}.hdf5")
+    save_config_fname = os.path.join(model_dir, "config.txt")
+    save_loss_fname = os.path.join(model_dir, "loss.png")
+    data_check()
+
+    # 解析済みデータをロードするならここは必要ない
+    if is_data_analyzed:
+        with open(save_data_fname,"r") as fi:
+            sent_list = fi.readlines()
+        print("解析済みデータをロードしました")
+    else:
+        print("データを解析します")
+        with open(data_fname, "r") as fi:
+            data = fi.read()
+        sent_list = sent_to_surface_conjugated(data,
+                                               save_path=save_data_fname,
+                                               level=mecab_lv,
+                                               use_conjugated=True)
+    sent_list = [sent.strip() for sent in sent_list if 3 <= len(sent.split(" ")) <= maxlen]
+
+    # 各種データの情報
+    n_samples = len(sent_list)
+    maxlen = max_sent_len(sent_list) + 1
+    words_set = create_words_set(sent_list)
+    if is_lang_model:
+        print("機能語のセットをロードします")
+        with open(func_wordsets_fname,"rb") as fi:
+            funcwords_set = pickle.load(fi)
+        words_set = sorted(words_set | funcwords_set)
+    words_num = len(words_set)
+
+    if use_loaded_x_y_w2i:
+        print("保存された入出力データをロードします")
+        with open(x_y_w2i_fname,"rb") as fi:
+            X, Y, word_to_id = pickle.load(fi)
+    else:
+        print("入出力データを作成中")
+        X, Y, word_to_id = create_data_x_y(save_x_y_w2i_fname,
+                                           sent_list,
+                                           maxlen,
+                                           words_num,
+                                           is_reversed=is_reversed)
+
+    if use_loaded_emb:
+        print("保存されたembをロードします")
+        if not os.path.exists(path=w2v_emb_fname):
+            raise IOError("w2vのファイルがありません")
+        with open(w2v_emb_fname, "rb") as fi:
+            embedding_matrix, loaded_words_set = pickle.load(fi)
+        if words_set != loaded_words_set:
+            raise ValueError("words_setに含まれる単語が一致しません")
+    else:
+        print("embを作成し、保存します")
+        embedding_matrix = create_emb_and_dump(w2v_fname,
+                                               words_set,
+                                               word_to_id,
+                                               w2v_emb_fname)
+
+    w2v_dim = len(embedding_matrix[1])
+    id_to_word = {i:w for w,i in word_to_id.items()}
+    if use_loaded_model:
+        print("保存されたモデルをロードします")
+        with open(save_model_fname,"r") as fi:
+            json_string = fi.read()
+            model = model_from_json(json_string)
+    else:
+        print("モデルを構築します")
+        model = create_model(save_model_fname)
+
+    if use_loaded_weight:
+        print("重みをロードしました")
+        model.load_weights(save_weights_fname)
+
+    model.compile(optimizer='adam', loss="categorical_crossentropy")
     model.summary()
+    h_length = model.layers[2].get_output_at(0).get_shape().as_list()[1]
+    save_dict = {"n_samples":n_samples,
+                 "maxlen":maxlen,
+                 "words_num":words_num,
+                 "h_length":h_length,
+                 "w2v_dim":w2v_dim
+                 }
+    save_config(path=save_config_fname, **save_dict)
+
     """
         callbacksの記述
     """
-    es_cb = keras.callbacks.EarlyStopping(monitor='loss', patience=0, verbose=1, mode='auto')
+    # es_cb = keras.callbacks.EarlyStopping(patience=30,
+    #                                       verbose=1,
+    #                                       mode='auto')
     print_callback = LambdaCallback(on_epoch_end=on_epoch_end)
     model_checkpoint = ModelCheckpoint(filepath=save_callback_weights_fname,
-                                        monitor='loss',
                                         save_weights_only=True,
-                                        period=10)
-    epochs = 150
+                                        period=30)
+    epochs = 3
     loss_history = []
+    val_loss_history = []
     for i in range(epochs):
         h = np.random.normal(0,1,(n_samples,h_length))
         c = np.random.normal(0,1,(n_samples,h_length))
@@ -300,14 +228,11 @@ if __name__ == '__main__':
                 epochs=i+1,
                 batch_size=32,
                 initial_epoch = i,
-                callbacks=[print_callback,es_cb,model_checkpoint])
+                validation_split=0.05,
+                callbacks=[print_callback,model_checkpoint])
         loss = fit.history['loss'][0]
+        val_loss = fit.history['val_loss'][0]
         loss_history.append(loss)
-    model_json = model.to_json()
-    with open(save_model_fname, mode='w') as fo:
-        fo.write(model_json)
+        val_loss_history.append(val_loss)
     model.save_weights(save_weights_fname)
-    plot_history_loss(loss_history)
-    save_config()
-    with open(save_word2id_fname,"wb") as fo:
-        pickle.dump(word_to_id, fo)
+    plot_history_loss(loss_history, val_loss_history, save_loss_fname)
