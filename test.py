@@ -1,14 +1,14 @@
 
-import os
-import sys
-from gensim.models import KeyedVectors
+import csv
 
-fname = "model.bin"
-
-w2v = KeyedVectors.load_word2vec_format(fname, binary=True)
-import pdb; pdb.set_trace()
-
-
+fname = "./templete_model/models_5000_fast_isTraining/sample_result_weights.hdf5_0_1.csv"
+save_fname = "temp.txt"
+with open(fname, "r") as fi:
+    with open(save_fname, "w") as fo:
+        reader = csv.reader(fi)
+        for line in reader:
+            fo.write("-----\n")
+            fo.write(line[0]+"\n")
 
 
 
