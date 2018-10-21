@@ -29,9 +29,11 @@ def sent_to_surface_conjugated(sentences:str,
         while node:
             morphes = node.feature.split(",")
             if morphes[0] == "BOS/EOS":
-                word = "<BOS/EOS>"
-            else:
-                word = node.surface
+                wm = "<BOS/EOS>_BOS/EOS"
+                word_morph_list.append(wm)
+                node = node.next
+                continue
+            word = node.surface
             tail_infoes = morphes[:level]
             if use_conjugated:
                 tail_infoes.append(morphes[5])
@@ -49,17 +51,14 @@ def sent_to_surface_conjugated(sentences:str,
 def max_sent_len(sent_list:list):
     return max([len(sent.split(" ")) for sent in sent_list])
 
-def save_config(path:str, **kwargs):
+def save_config(path:str, save_dict:dict):
     """
         sava_config
     """
+    result = [f"{k} = {v}" for k,v in save_dict.items()]
     with open(path,"w") as fo:
-        fo.write("Config\n\n")
-        fo.write("maxlen: {}\n".format(kwargs["maxlen"]))
-        fo.write("n_samples: {}\n".format(kwargs["n_samples"]))
-        fo.write("words: {}\n".format(kwargs["words_num"]))
-        fo.write("h_length: {}\n".format(kwargs["h_length"]))
-        fo.write("w2v_dim: {}\n".format(kwargs["w2v_dim"]))
+        fo.write("Config\n")
+        fo.write("\n".join(result))
     return
 
 def create_words_set(sent_list:list):
@@ -143,7 +142,7 @@ def plot_history_loss(loss_history:list,
     return
 
 def choise_output_word_id(distribution, mode='greedy'):
-    BorEOS = "<BOS/EOS>_BOS/EOS_*_*_*_*".lower()
+    BorEOS = "<BOS/EOS>_BOS/EOS".lower()
     output_ids = np.argsort(distribution)[::-1]
     def check(id):
         if id == 0:
@@ -180,8 +179,56 @@ def add_funcword(word_to_id:dict, funcwords_set:set):
 def printing_sample(csv:str, save_path:str="temp.txt"):
     with open(csv, "r") as fi:
         sent_list = fi.readlines()
-    
+
     sent_list = [sent.strip().split(",")[0] for sent in sent_list]
     with open(save_path, "w") as fo:
         fo.write("\n".join(sent_list))
 
+def lstm_predict_sampling(model,
+                     maxlen:int,
+                     word_to_id:dict,
+                     id_to_word:dict,
+                     h_length:int,
+                     is_reversed:bool):
+
+    BorEOS = "<BOS/EOS>_BOS/EOS".lower()
+    x_pred = np.zeros(shape=(1,maxlen),dtype='int32')
+    x_pred[0,0] = word_to_id[BorEOS]
+    h_pred = np.random.normal(0,1,(1,h_length))
+    c_pred = np.random.normal(0,1,(1,h_length))
+    sentence = []
+    for i in range(maxlen-1):
+        preds = model.predict([x_pred,h_pred,c_pred], verbose=0)[0]
+        output_id = choise_output_word_id(preds[i], mode="greedy")
+        output_word = id_to_word[output_id]
+        sentence.append(output_word)
+        if output_word == BorEOS:
+            break
+        x_pred[0,i+1] = output_id
+    if sentence[-1] != BorEOS:
+        err_mes = "produce_failed!"
+        print(err_mes)
+
+    del sentence[-1]
+    if not sentence:
+        err_mes = "white"
+        print(err_mes)
+
+    sent_surface = [w_m.split("_")[0] for w_m in sentence]
+    if is_reversed:
+        sent_surface = [word for word in reversed(sent_surface)]
+    sent_surface = " ".join(sent_surface)
+    sent_morph = [create_sent_morph(w_m) for w_m in sentence]
+    sent_morph = " ".join(sent_morph)
+
+    return (sent_surface, sent_morph)
+
+def create_sent_morph(w_m):
+    word, morph = w_m.split("_")[0], w_m.split("_")[1]
+    if morph in ["助詞","助動詞","記号","接続詞"]:
+        res = w_m
+    else:
+        m = w_m.split("_")[1:]
+        m = "_".join(m)
+        res = "<{}>".format(m)
+    return res

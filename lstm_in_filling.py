@@ -13,7 +13,7 @@ import keras.backend as K
 import pickle
 import csv
 
-def choise_output_word_id(distribution, morph, mode='greedy'):
+def infill_choice_id(distribution, morph, mode='greedy'):
     output_ids = np.argsort(distribution)[::-1]
     morph = morph.strip("<>")
     def check(id):
@@ -21,7 +21,6 @@ def choise_output_word_id(distribution, morph, mode='greedy'):
             return False
         output = id_to_word[id].split("_")[1:]
         output = "_".join(output)
-        # import pdb; pdb.set_trace()
         if output != morph:
             return False
         return True
@@ -58,16 +57,17 @@ def create_sava_dir(temp_dir, lang_dir):
     save_dir = "./{}_{}".format(temp_dir_last_name, lang_dir_last_name)
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
-    
+
     return save_dir
 
 
 if __name__ == '__main__':
 
-    templete_dir = "./templete_model/models_5000"
+    templete_dir = "./templete_model/model_temp"
     templete_csv_fname = "{}/sampling_weights.hdf5.csv".format(templete_dir)
-    # templete_csv_fname = "{}/temp.csv".format(templete_dir)   
-    lang_dir = "./language_model/wiki_edojidai"
+    # templete_csv_fname = "{}/temp.csv".format(templete_dir)
+    # lang_dir = "./language_model/wiki_edojidai"
+    lang_dir = "./templete_model/model_temp"
     lang_model_fname = "{}/model.json".format(lang_dir)
     lang_weights_fname = "{}/weights/weights.hdf5".format(lang_dir)
     save_dir = create_sava_dir(templete_dir,lang_dir)
@@ -89,11 +89,11 @@ if __name__ == '__main__':
         word_to_id, is_reversed = pickle.load(fi)
     id_to_word = {i:w for w,i in word_to_id.items()}
 
-    n_samples = 30
+    n_samples = 5
     if len(templete) < n_samples:
         raise ValueError("サンプル数が上限を超えています\ntemplete: ".format(str(len(templete))))
-    
-    BorEOS = "<BOS/EOS>_BOS/EOS_*_*_*_*".lower()
+
+    BorEOS = "<BOS/EOS>_BOS/EOS".lower()
     samples = random.sample(templete,n_samples)
     for sample in samples:
         is_out_of_bounds = False
@@ -111,7 +111,6 @@ if __name__ == '__main__':
                     x_pred[0,i+1] = word_to_id[sample_wakati_list[i]]
                 sentence.append(sample_wakati_list[i].split("_")[0])
                 continue
-
             preds = model.predict([x_pred,pred_h,pred_c], verbose=0)[0]
             try:
                 output_id = choise_output_word_id(preds[i], morph=sample_wakati_list[i],mode="greedy")

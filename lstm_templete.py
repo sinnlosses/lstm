@@ -16,36 +16,20 @@ import pickle
 from utils import sent_to_surface_conjugated, max_sent_len, save_config
 from utils import create_words_set, create_data_x_y, create_emb_and_dump
 from utils import plot_history_loss, choise_output_word_id, add_funcword
+from utils import lstm_predict_sampling
 
 def on_epoch_end(epoch, logs):
 
-    BorEOS = "<BOS/EOS>_BOS/EOS_*_*_*_*".lower()
+    BorEOS = "<BOS/EOS>_BOS/EOS".lower()
     print('----- Generating text after Epoch: %d' % epoch)
-    x_pred = np.zeros(shape=(1,maxlen),dtype='int32')
-    x_pred[0,0] = word_to_id[BorEOS]
-    h_pred = np.random.normal(0,1,(1,h_length))
-    c_pred = np.random.normal(0,1,(1,h_length))
-    sentence = []
-    for i in range(maxlen-1):
-        preds = model.predict([x_pred,h_pred,c_pred], verbose=0)[0]
-        output_id = choise_output_word_id(preds[i], mode="random")
-        output_word = id_to_word[output_id]
-        sentence.append(output_word)
-        if output_word == BorEOS:
-            break
-        x_pred[0,i+1] = output_id
-    if sentence[-1] != BorEOS:
-        err_mes = "produce_failed!"
-        print(err_mes)
-        return
-
-    del sentence[-1]
-    sent_surface = [w_m.split("_")[0] for w_m in sentence]
-    if is_reversed:
-        sent_surface = [word for word in reversed(sent_surface)]
-    sent_surface = " ".join(sent_surface)
+    sent_surface, sent_morph = lstm_predict_sampling(
+                                    model=model,
+                                    maxlen=maxlen,
+                                    word_to_id=word_to_id,
+                                    id_to_word=id_to_word,
+                                    h_length=h_length,
+                                    is_reversed=is_reversed)
     print(sent_surface)
-
     return
 
 def data_check():
@@ -107,24 +91,26 @@ def create_model(save_path:str,
 
 if __name__ == '__main__':
 
-    # data_fname = "./source/copy_source.txt"
-    data_fname = "./source/wiki_edojidai.txt"
+    data_fname = "./source/copy_temp.txt"
+    # data_fname = "./source/wiki_edojidai.txt"
     # base_dir = "templete_model"
-    base_dir = "language_model"
+    base_dir = "templete_model"
     # model_dir_name = "models_5000"
-    model_dir_name = "wiki_edojidai"
+    model_dir_name = "model_temp"
     func_wordsets_fname = "func_wordsets.p"
     w2v_fname = "model.bin"
     maxlen = 40
-    mecab_lv = 4
-    save_weight_period = 100
-    epochs = 1000
+    mecab_lv = 2
+    save_weight_period = 20
+    epochs = 10
+    batch_size = 32
     is_data_analyzed = False
-    is_lang_model = True
-    is_reversed = True
+    is_lang_model = False
+    is_reversed = False
     use_loaded_emb = False
     use_loaded_model = False
     use_loaded_weight = False
+    use_conjugated = False
 
     model_dir = os.path.join(base_dir,model_dir_name)
     weights_dir = os.path.join(model_dir,"weights")
@@ -147,10 +133,11 @@ if __name__ == '__main__':
         print("データを解析します")
         with open(data_fname, "r") as fi:
             data = fi.read()
-        sent_list = sent_to_surface_conjugated(data,
-                                               save_path=save_data_fname,
-                                               level=mecab_lv,
-                                               use_conjugated=True)
+        sent_list = sent_to_surface_conjugated(
+                        data,
+                        save_path=save_data_fname,
+                        level=mecab_lv,
+                        use_conjugated=use_conjugated)
     sent_list = [sent.strip() for sent in sent_list if 3 <= len(sent.split(" ")) <= maxlen]
 
     # 各種データの情報
@@ -163,7 +150,7 @@ if __name__ == '__main__':
             funcwords_set = pickle.load(fi)
         words_set = sorted(words_set | funcwords_set)
     words_num = len(words_set)
-    
+
     print("入出力データを作成中")
     X, Y, word_to_id = create_data_x_y(
                                         sent_list,
@@ -209,13 +196,16 @@ if __name__ == '__main__':
     model.compile(optimizer='adam', loss="categorical_crossentropy")
     model.summary()
     h_length = model.layers[2].get_output_at(0).get_shape().as_list()[1]
-    save_dict = {"n_samples":n_samples,
-                 "maxlen":maxlen,
-                 "words_num":words_num,
-                 "h_length":h_length,
-                 "w2v_dim":w2v_dim
+    save_dict = {"n_samples":str(n_samples),
+                 "maxlen":str(maxlen),
+                 "words_num":str(words_num),
+                 "h_length":str(h_length),
+                 "w2v_dim":str(w2v_dim),
+                 "is_reversed":str(is_reversed),
+                 "mecab_lv":str(mecab_lv),
+                 "use_conjugated":str(use_conjugated)
                  }
-    save_config(path=save_config_fname, **save_dict)
+    save_config(path=save_config_fname, save_dict=save_dict)
     with open(save_w2i_fname, "wb") as fo:
         pickle.dump([word_to_id, is_reversed], fo)
     """
@@ -236,7 +226,7 @@ if __name__ == '__main__':
         fit = model.fit(x=[X, h, c],
                 y=Y,
                 epochs=i+1,
-                batch_size=32,
+                batch_size=batch_size,
                 initial_epoch = i,
                 validation_split=0.05,
                 callbacks=[print_callback,model_checkpoint])
