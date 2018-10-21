@@ -1,19 +1,6 @@
 
-import csv
+from utils import printing_sample
 
-fname = "./templete_model/models_5000_fast_isTraining/sample_result_weights.hdf5_0_1.csv"
-save_fname = "temp.txt"
-with open(fname, "r") as fi:
-    with open(save_fname, "w") as fo:
-        reader = csv.reader(fi)
-        for line in reader:
-            fo.write("-----\n")
-            fo.write(line[0]+"\n")
-
-
-
-
-
-
-
-
+# fname = "./templete_model/models_5000/sampling_weights.hdf5.csv"
+fname = "./language_model/wiki_edojidai/sampling_weights.hdf5.csv"
+printing_sample(fname)

@@ -15,7 +15,7 @@ import pickle
 
 from utils import sent_to_surface_conjugated, max_sent_len, save_config
 from utils import create_words_set, create_data_x_y, create_emb_and_dump
-from utils import plot_history_loss, choise_output_word_id
+from utils import plot_history_loss, choise_output_word_id, add_funcword
 
 def on_epoch_end(epoch, logs):
 
@@ -41,6 +41,8 @@ def on_epoch_end(epoch, logs):
 
     del sentence[-1]
     sent_surface = [w_m.split("_")[0] for w_m in sentence]
+    if is_reversed:
+        sent_surface = [word for word in reversed(sent_surface)]
     sent_surface = " ".join(sent_surface)
     print(sent_surface)
 
@@ -59,8 +61,12 @@ def data_check():
     # 重みを保存するDirの確認
     if not os.path.exists(weights_dir):
         os.mkdir(weights_dir)
-    if not os.path.exists(func_wordsets_fname):
-        raise IOError(f"{func_wordsets_fname}がありません")
+    if is_lang_model:
+        if not os.path.exists(func_wordsets_fname):
+            raise IOError(f"{func_wordsets_fname}がありません")
+    if is_data_analyzed:
+        if not os.path.exists(save_data_fname):
+            raise IOError("保存されたanalyzed dataがありません")
 
     return
 
@@ -72,7 +78,7 @@ def create_model(save_path:str,
                     input_length=maxlen,
                     weights=[embedding_matrix],
                     mask_zero=True,
-                    trainable=False
+                    trainable=True
                     )(main_input)
     initial_h = Input(shape=(h_length,),
                           dtype='float32',
@@ -101,25 +107,29 @@ def create_model(save_path:str,
 
 if __name__ == '__main__':
 
-    data_fname = "./source/copy_source.txt"
-    base_dir = "templete_model"
-    model_dir_name = "models_5000"
+    # data_fname = "./source/copy_source.txt"
+    data_fname = "./source/wiki_edojidai.txt"
+    # base_dir = "templete_model"
+    base_dir = "language_model"
+    # model_dir_name = "models_5000"
+    model_dir_name = "wiki_edojidai"
     func_wordsets_fname = "func_wordsets.p"
     w2v_fname = "model.bin"
     maxlen = 40
     mecab_lv = 4
-    is_data_analyzed = True
-    is_lang_model = False
+    save_weight_period = 100
+    epochs = 1000
+    is_data_analyzed = False
+    is_lang_model = True
     is_reversed = True
-    use_loaded_x_y_w2i = False
-    use_loaded_emb = True
-    use_loaded_model = True
+    use_loaded_emb = False
+    use_loaded_model = False
     use_loaded_weight = False
 
     model_dir = os.path.join(base_dir,model_dir_name)
     weights_dir = os.path.join(model_dir,"weights")
     w2v_emb_fname = os.path.join(model_dir, "emb_wordsets.p")
-    save_x_y_w2i_fname = os.path.join(model_dir, "x_y_w2i.p")
+    save_w2i_fname = os.path.join(model_dir, "word2id.p")
     save_data_fname = os.path.join(model_dir, "analyzed_data.txt")
     save_model_fname = os.path.join(model_dir, "model.json")
     save_weights_fname = os.path.join(weights_dir, "weights.hdf5")
@@ -153,18 +163,18 @@ if __name__ == '__main__':
             funcwords_set = pickle.load(fi)
         words_set = sorted(words_set | funcwords_set)
     words_num = len(words_set)
-
-    if use_loaded_x_y_w2i:
-        print("保存された入出力データをロードします")
-        with open(x_y_w2i_fname,"rb") as fi:
-            X, Y, word_to_id = pickle.load(fi)
-    else:
-        print("入出力データを作成中")
-        X, Y, word_to_id = create_data_x_y(save_x_y_w2i_fname,
-                                           sent_list,
-                                           maxlen,
-                                           words_num,
-                                           is_reversed=is_reversed)
+    
+    print("入出力データを作成中")
+    X, Y, word_to_id = create_data_x_y(
+                                        sent_list,
+                                        maxlen,
+                                        words_num,
+                                        is_reversed=is_reversed)
+    if is_lang_model:
+        word_to_id = add_funcword(word_to_id, funcwords_set)
+        if words_num != len(word_to_id):
+            print(words_num, len(word_to_id))
+            raise AssertionError("words_numとword_to_idの総数が異なります")
 
     if use_loaded_emb:
         print("保存されたembをロードします")
@@ -206,7 +216,8 @@ if __name__ == '__main__':
                  "w2v_dim":w2v_dim
                  }
     save_config(path=save_config_fname, **save_dict)
-
+    with open(save_w2i_fname, "wb") as fo:
+        pickle.dump([word_to_id, is_reversed], fo)
     """
         callbacksの記述
     """
@@ -216,8 +227,7 @@ if __name__ == '__main__':
     print_callback = LambdaCallback(on_epoch_end=on_epoch_end)
     model_checkpoint = ModelCheckpoint(filepath=save_callback_weights_fname,
                                         save_weights_only=True,
-                                        period=30)
-    epochs = 3
+                                        period=save_weight_period)
     loss_history = []
     val_loss_history = []
     for i in range(epochs):

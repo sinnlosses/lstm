@@ -69,7 +69,7 @@ def create_words_set(sent_list:list):
                                       split=" ")
     return set(sorted(words_sequence))
 
-def create_data_x_y(fname:str,
+def create_data_x_y(
                     sent_list:list,
                     maxlen:int,
                     words_num:int,
@@ -133,7 +133,7 @@ def plot_history_loss(loss_history:list,
     # Plot the loss in the history
     fig = plt.figure(1)
     plt.plot(loss_history,label="loss for training")
-    plt.plot(val_loss_history,label="loss for training")
+    plt.plot(val_loss_history,label="loss for validation")
     plt.title("model_loss")
     plt.xlabel("epoch")
     plt.ylabel('loss: cross_entropy')
@@ -168,3 +168,20 @@ def choise_output_word_id(distribution, mode='greedy'):
         raise ValueError("modeの値が間違っています")
 
     return output_id
+
+def add_funcword(word_to_id:dict, funcwords_set:set):
+    total_ids = len(word_to_id)
+    for func_word in funcwords_set:
+        if func_word not in word_to_id:
+            total_ids += 1
+            word_to_id[func_word] = total_ids
+    return word_to_id
+
+def printing_sample(csv:str, save_path:str="temp.txt"):
+    with open(csv, "r") as fi:
+        sent_list = fi.readlines()
+    
+    sent_list = [sent.strip().split(",")[0] for sent in sent_list]
+    with open(save_path, "w") as fo:
+        fo.write("\n".join(sent_list))
+
